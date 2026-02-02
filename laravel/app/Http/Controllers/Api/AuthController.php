@@ -63,9 +63,8 @@ class AuthController extends Controller
                 'cache_key' => $cacheKey,
                 'otp' => $otp // For testing only
             ], 200);
-
         } catch (\Throwable $e) {
-            Log::error('Register Error: '.$e->getMessage());
+            Log::error('Register Error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Something went wrong on server.'
@@ -134,9 +133,8 @@ class AuthController extends Controller
                 'message' => 'Registration completed successfully',
                 'user_id' => $user->id
             ], 201);
-
         } catch (\Throwable $e) {
-            Log::error('Complete Registration Error: '.$e->getMessage());
+            Log::error('Complete Registration Error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Something went wrong on server.'
@@ -180,13 +178,61 @@ class AuthController extends Controller
                 'token' => $token,
                 'user' => $user
             ]);
-
         } catch (\Throwable $e) {
-            Log::error('Login Error: '.$e->getMessage());
+            Log::error('Login Error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Something went wrong on server.'
             ], 500);
         }
+    }
+
+    public function adminLogin(Request $request)
+    {
+        // Validate input
+        $request->validate([
+            'login'    => 'required|string', // email OR phone
+            'password' => 'required|string',
+        ]);
+
+        try {
+            // Use 'email' instead of 'username' if your table has no 'username'
+            $user = User::where('email', $request->login)
+                ->orWhere('phone', $request->login)
+                ->first();
+        } catch (\Exception $e) {
+            // Catch any unexpected errors
+            return response()->json([
+                'message' => 'Something went wrong. Please try again.'
+            ], 500);
+        }
+
+        // Invalid credentials
+        if (!$user || !Hash::check($request->password, $user->password)) {
+            return response()->json([
+                'message' => 'Invalid login or password.'
+            ], 401);
+        }
+
+        // Admin only check
+        if ($user->role != 1) {
+            return response()->json([
+                'message' => 'You do not have admin access.'
+            ], 403);
+        }
+
+        // Create token
+        $token = $user->createToken('admin-token')->plainTextToken;
+
+        return response()->json([
+            'message' => 'Login successful',
+            'token'   => $token,
+            'user'    => [
+                'id'    => $user->id,
+                'email' => $user->email,
+                'phone' => $user->phone,
+                'role'  => $user->role,
+            ]
+        ], 200);
     }
 }
