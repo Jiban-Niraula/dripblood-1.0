@@ -6,6 +6,10 @@ import Dashboard from "../pages/Dashboard";
 import Users from "../pages/user/Users";
 import MasterLayout from "../layouts/MasterLayout";
 
+import BloodDonationEvent from "../pages/donation/BloodDonationEvent";
+import MedicalReportsPage from "../pages/reports/MedicalReports";
+import DonationRegistration from "../pages/donation/DonationRegistration";
+
 import ProtectedRoute from "./ProtectedRoute";
 import PublicRoute from "./PublicRoute";
 
@@ -13,7 +17,7 @@ export default function AppRouter() {
   return (
     <Router>
       <Routes>
-        {/* Public */}
+        {/* ================= PUBLIC ROUTES ================= */}
         <Route
           path="/"
           element={
@@ -22,6 +26,7 @@ export default function AppRouter() {
             </PublicRoute>
           }
         />
+
         <Route
           path="/login"
           element={
@@ -31,7 +36,7 @@ export default function AppRouter() {
           }
         />
 
-        {/* Protected layout */}
+        {/* ================= PROTECTED ROUTES ================= */}
         <Route
           element={
             <ProtectedRoute>
@@ -41,7 +46,26 @@ export default function AppRouter() {
         >
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/users" element={<Users />} />
-          <Route path="*" element={<Navigate to="/dashboard" />} />
+
+          {/* Blood Donation Camp */}
+          <Route
+            path="/donation-camps"
+            element={<BloodDonationEvent />}
+          />
+
+          <Route
+          path="/medical-reports"
+          element={<MedicalReportsPage/>}
+          >
+          </Route>
+
+          <Route
+            path="/donation-registrations"
+            element={<DonationRegistration />}
+          />
+
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>
     </Router>

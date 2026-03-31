@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../mywidgets/buttomnav.dart';
 
@@ -1302,15 +1303,22 @@ class _SettingsPageState extends State<SettingsPage> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
             ),
-            onPressed: () {
-              Navigator.pop(context);
+            onPressed: () async {
+              // 1. Clear the stored token
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove("token"); // or prefs.clear() to remove everything
+
+              // 2. Navigate to login screen and clear history
               Get.offAllNamed('/login');
-              ScaffoldMessenger.of(context).showSnackBar(
+
+              // 3. Show confirmation message
+              ScaffoldMessenger.of(Get.context!).showSnackBar(
                 const SnackBar(content: Text('Logged out successfully')),
               );
             },
             child: const Text('Logout'),
           ),
+
         ],
       ),
     );

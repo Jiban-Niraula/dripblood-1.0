@@ -1,1736 +1,1154 @@
-  import React, { useEffect, useState } from "react";
-  import { useNavigate } from "react-router-dom";
-  import {
-    CheckCircle,
-    Clock,
-    Users,
-    UserCheck,
-    UserPlus,
-    Download,
-    Mail,
-    Phone,
-    Activity,
-    Eye,
-    Edit,
-    Trash2,
-    Search,
-    X,
-    AlertCircle,
-    ChevronLeft,
-    ChevronRight,
-    Shield,
-    User,
-    MapPin,
-    Calendar,
-    Droplet,
-    FileText,
-    ArrowRight,
-    ArrowLeft,
-    Check,
-  } from "lucide-react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import {
+  CheckCircle, Clock, Users, UserCheck, UserPlus, Download,
+  Mail, Phone, Activity, Eye, EyeOff, Edit, Trash2, Search, X,
+  AlertCircle, ChevronLeft, ChevronRight, Shield, User,
+  MapPin, Calendar, Droplet, FileText, ArrowRight, ArrowLeft,
+  Check, Upload, Camera, Hash, RefreshCw, Filter, Lock,
+} from "lucide-react";
 
-  // Demo API configuration - Replace these with your actual API endpoints
-  const API_CONFIG = {
-    BASE_URL: "https://api.example.com", // Replace with your actual API URL
-    ENDPOINTS: {
-      USERS: "/users",
-      CREATE_USER: "/users/create",
-      UPDATE_USER: "/users/update",
-      DELETE_USER: "/users/delete",
+// ─── API CONFIG ────────────────────────────────────────────────────────────────
+const API_BASE = "http://127.0.0.1:8000/api";
+
+// AUTH STRATEGY:
+//   Token-based (Sanctum/Passport): token is read from localStorage.
+//   Key checked in order: "auth_token" → "access_token" (covers both naming conventions).
+//   If your app uses Sanctum cookie/SPA auth instead, remove the Authorization header
+//   and replace it with credentials: "include" so cookies are sent automatically.
+const getAuthToken = () =>
+  localStorage.getItem("auth_token") || localStorage.getItem("access_token") || null;
+
+const apiFetch = async (path, options = {}) => {
+  const token = getAuthToken();
+  const isFormData = options.body instanceof FormData;
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    // credentials: "include", // ← uncomment if using Sanctum SPA cookie auth
+    headers: {
+      // Do NOT set Content-Type for FormData — the browser must set it
+      // automatically so it includes the correct multipart boundary.
+      // Forcing "application/json" here is what caused the Laravel image
+      // validation to always fail.
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
+      Accept: "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
     },
+  });
+  if (!res.ok) {
+    let errMsg = `HTTP ${res.status}`;
+    try {
+      const err = await res.json();
+      // Laravel validation errors come back as { errors: { field: [msg] } }
+      // Flatten them into a single readable string for the toast.
+      if (err.errors) {
+        errMsg = Object.values(err.errors).flat().join(" | ");
+      } else {
+        errMsg = err.message || errMsg;
+      }
+    } catch {
+      // Backend returned non-JSON (e.g. HTML error page) — use generic message
+    }
+    throw new Error(errMsg);
+  }
+  try {
+    return await res.json();
+  } catch {
+    throw new Error("Invalid JSON response from server");
+  }
+};
+
+// ─── BLANK FORM ────────────────────────────────────────────────────────────────
+const BLANK = {
+  name: "", email: "", phone: "",
+  date_of_birth: "", gender: "",
+  address: "", city: "", state: "", zip_code: "", country: "Nepal",
+  blood_type: "",
+  // FIX #6: Single source of truth — use 'role' only; 'type' is derived/display only
+  role: "user",   // values: "user" | "admin"
+  status: "active", medical_conditions: "", notes: "", profile_image: "",
+  password: "", password_confirmation: "",
+};
+
+// ─── STATUS / ROLE BADGE HELPERS ───────────────────────────────────────────────
+const statusBadge = (status) => {
+  const map = {
+    active:   "bg-green-100 text-green-700",
+    inactive: "bg-orange-100 text-orange-700",
+    blocked:  "bg-red-100 text-red-700",
+  };
+  return map[status] || "bg-gray-100 text-gray-600";
+};
+
+// FIX #6: Use role instead of type for badge styling
+const roleBadge = (role) =>
+  role === "admin"
+    ? "bg-purple-100 text-purple-700"
+    : "bg-blue-100 text-blue-700";
+
+// ─── AVATAR ────────────────────────────────────────────────────────────────────
+// FIX #5: Replace dynamic Tailwind class (`w-${size}`) with a static map
+const avatarSizeMap = {
+  9:  "w-9 h-9",
+  10: "w-10 h-10",
+  16: "w-16 h-16",
+};
+
+const Avatar = ({ user, size = 10 }) => {
+  const sizeClass = avatarSizeMap[size] || "w-10 h-10";
+  // FIX #6: Check role instead of type
+  const isAdmin = user.role === "admin";
+
+  return user.profile_image ? (
+    <img
+      src={user.profile_image}
+      alt={user.name}
+      className={`${sizeClass} rounded-full object-cover ring-2 ring-white shadow-sm`}
+    />
+  ) : (
+    <div
+      className={`${sizeClass} rounded-full flex items-center justify-center text-white font-semibold text-sm ring-2 ring-white shadow-sm
+        ${isAdmin ? "bg-gradient-to-br from-purple-500 to-purple-700" : "bg-gradient-to-br from-red-500 to-rose-600"}`}
+    >
+      {user.name?.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)}
+    </div>
+  );
+};
+
+// ─── NORMALIZE META ────────────────────────────────────────────────────────────
+// FIX #4: Safely normalize pagination meta so nulls never break UI
+const normalizeMeta = (raw, fallbackPage) => ({
+  total:        raw?.total        ?? 0,
+  last_page:    raw?.last_page    ?? 1,
+  current_page: raw?.current_page ?? fallbackPage,
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function UserPage() {
+  const navigate = useNavigate();
+
+  // ── state ──────────────────────────────────────────────────────────────────
+  const [users,       setUsers]       = useState([]);
+  const [meta,        setMeta]        = useState({ total: 0, last_page: 1, current_page: 1 });
+  const [loading,     setLoading]     = useState(false);
+  const [search,      setSearch]      = useState("");
+  // FIX #2 & #6: Filter key uses "role" consistently (all | admin | user)
+  const [roleFilter,  setRoleFilter]  = useState("all");
+  const [page,        setPage]        = useState(1);
+
+  const [modalOpen,     setModalOpen]     = useState(false);
+  const [viewModal,     setViewModal]     = useState(false);
+  const [editModal,     setEditModal]     = useState(false);
+  const [selectedUser,  setSelectedUser]  = useState(null);
+  const [formStep,      setFormStep]      = useState(1);
+  const [formData,      setFormData]      = useState(BLANK);
+  const [imagePreview,  setImagePreview]  = useState(null);
+  const [errors,        setErrors]        = useState({});
+  const [submitting,    setSubmitting]    = useState(false);
+  const [toast,         setToast]         = useState(null);
+  // FIX #6: Dedicated error state so the UI can render an error banner
+  // instead of silently showing an empty table after a failed fetch.
+  const [fetchError,    setFetchError]    = useState(null);
+  // Password visibility toggles (Add modal + Edit modal separate)
+  const [showPassword,      setShowPassword]      = useState(false);
+  const [showConfirm,       setShowConfirm]       = useState(false);
+  const [showEditPassword,  setShowEditPassword]  = useState(false);
+
+  // Debounce ref — prevents an API call on every search keystroke (FIX #7)
+  const debounceRef = useRef(null);
+
+  // ── imageFile ref ──────────────────────────────────────────────────────────
+  // Holds the raw File object selected by the user.
+  // Kept OUT of formData/state — File objects can't be JSON.stringify'd and
+  // FormData.append() needs the real File, not a base64 string.
+  const imageFileRef = useRef(null);
+
+  // ── auth guard ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const u = localStorage.getItem("admin_user");
+    if (!u) navigate("/login");
+  }, [navigate]);
+
+  // ── toast ──────────────────────────────────────────────────────────────────
+  const showToast = (msg, type = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
   };
 
-  // Demo fetch function - Replace this with your actual API integration
-  const demoFetch = async (endpoint, options = {}) => {
-    console.log("API Call:", endpoint, options);
-    // Simulate API delay
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    
-    // Return mock response
-    return {
-      success: true,
-      message: "Operation successful",
-      data: options.body ? JSON.parse(options.body) : null,
-    };
+  // ── fetch users ────────────────────────────────────────────────────────────
+  // Stable fetchUsers — receives all params explicitly so useCallback dep array
+  // stays empty and the function reference never changes between renders.
+  const fetchUsers = useCallback(async (currentPage, currentSearch, currentRole) => {
+    setLoading(true);
+    setFetchError(null); // clear previous error on new attempt
+    try {
+      const params = new URLSearchParams({ page: currentPage, per_page: 10 });
+      if (currentSearch) params.set("search", currentSearch);
+      if (currentRole !== "all") params.set("role", currentRole);
+
+      const data = await apiFetch(`/users?${params}`);
+
+      // FIX #2: Laravel Resource API always wraps rows in { data: [] }.
+      // Never assume the response is a bare array — always read data.data.
+      // Fallback to [] keeps the UI safe if the shape is unexpected.
+      const rows = Array.isArray(data) ? data : (data.data ?? []);
+      const sorted = [...rows].sort((a, b) => b.id - a.id);
+      setUsers(sorted);
+
+      // FIX #3: Use backend meta directly — never synthesise pagination values.
+      // normalizeMeta only fills genuine nulls/undefineds so the UI never crashes;
+      // it does NOT invent pagination that the server didn't send.
+      const rawMeta = Array.isArray(data)
+        ? { total: sorted.length, last_page: 1, current_page: currentPage }
+        : (data.meta ?? data.links ?? {}); // support both meta and links shapes
+      setMeta(normalizeMeta(rawMeta, currentPage));
+
+    } catch (e) {
+      // FIX #6: Surface error in UI state AND stop the spinner so the user
+      // isn't left staring at an infinite loading indicator.
+      const msg = e.message || "Failed to load users";
+      setFetchError(msg);
+      showToast(msg, "error");
+      // Keep whatever users were previously loaded rather than wiping the list
+    } finally {
+      setLoading(false);
+    }
+  }, []); // stable — no external deps
+
+  // FIX #7: Single unified effect drives all fetching with debounce.
+  // Search input is debounced (400 ms); page/role changes fire immediately.
+  // FIX #5: setPage(1) runs synchronously before the debounced fetch so the
+  // correct page number is always used — no stale-page race.
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const delay = search ? 400 : 0;
+    debounceRef.current = setTimeout(() => {
+      fetchUsers(page, search, roleFilter);
+    }, delay);
+    return () => clearTimeout(debounceRef.current);
+  }, [page, search, roleFilter, fetchUsers]);
+
+  // FIX #5: Reset to page 1 whenever search text or role filter changes.
+  // This runs before the effect above so `page` is already 1 when fetchUsers fires.
+  useEffect(() => { setPage(1); }, [search, roleFilter]);
+
+  // ── stats (derived from loaded page) ──────────────────────────────────────
+  // FIX #8: Stats computed from users array (actual data), not guessed from meta.
+  //         meta.total is still used for "Total Users" since it reflects the full
+  //         server count. Role/status breakdowns reflect the current page data;
+  //         for full accuracy, implement a backend /stats endpoint.
+  const stats = [
+    { label: "Total Users",  value: meta.total,                                          color: "blue",   icon: Users },
+    { label: "Admins",       value: users.filter(u => u.role === "admin").length,         color: "purple", icon: Shield },
+    { label: "Active",       value: users.filter(u => u.status === "active").length,      color: "green",  icon: UserCheck },
+    { label: "Blocked",      value: users.filter(u => u.status === "blocked").length,     color: "orange", icon: Clock },
+  ];
+
+  // ── image ──────────────────────────────────────────────────────────────────
+  // ROOT CAUSE FIX: previously we stored reader.result (base64 string) into
+  // formData.profile_image and then sent it via JSON.stringify. Laravel's
+  // 'image' validation rule expects a real UploadedFile — a base64 string
+  // always fails it. Solution: keep the raw File in imageFileRef and only use
+  // the object-URL for the <img> preview. The File is appended to FormData at
+  // submit time so Laravel receives a genuine multipart file upload.
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setErrors(p => ({ ...p, profile_image: "Invalid image file" }));
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setErrors(p => ({ ...p, profile_image: "Max size is 5 MB" }));
+      return;
+    }
+    imageFileRef.current = file;                          // store real File
+    setImagePreview(URL.createObjectURL(file));           // preview only
+    setErrors(p => ({ ...p, profile_image: undefined }));
   };
 
-  export default function UserPage() {
-    const [user, setUser] = useState(null);
-    const [users, setUsers] = useState([]);
-    const [search, setSearch] = useState("");
-    const [roleFilter, setRoleFilter] = useState("all");
-    const [currentPage, setCurrentPage] = useState(1);
-    const [itemsPerPage] = useState(10);
-    const [modalOpen, setModalOpen] = useState(false);
-    const [viewModalOpen, setViewModalOpen] = useState(false);
-    const [editModalOpen, setEditModalOpen] = useState(false);
-    const [selectedUser, setSelectedUser] = useState(null);
-    const [formStep, setFormStep] = useState(1);
-    const [loading, setLoading] = useState(false);
-    const [newUser, setNewUser] = useState({
-      // Step 1: Basic Info
-      name: "",
-      email: "",
-      phone: "",
-      dateOfBirth: "",
-      gender: "",
-      
-      // Step 2: Address Info
-      address: "",
-      city: "",
-      state: "",
-      zipCode: "",
-      country: "Nepal",
-      
-      // Step 3: Medical & Role Info
-      bloodType: "",
-      type: "Donor",
-      role: "general",
-      status: "active",
-      medicalConditions: "",
-      notes: "",
-    });
-    const [errors, setErrors] = useState({});
-    const [activities, setActivities] = useState([]);
-    const navigate = useNavigate();
+  // ── validation ─────────────────────────────────────────────────────────────
+  const validate = (step) => {
+    const e = {};
+    if (step === 1) {
+      if (!formData.name?.trim() || formData.name.trim().length < 2)  e.name  = "Name must be at least 2 characters";
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email))         e.email = "Valid email required";
+      if (!/^[0-9]{7,}$/.test(formData.phone?.replace(/\s/g, "")))    e.phone = "Valid phone number required";
+      if (!formData.date_of_birth)                                     e.date_of_birth = "Date of birth required";
+      if (!formData.gender)                                            e.gender = "Gender required";
+      if (!formData.password || formData.password.length < 8)         e.password = "Password must be at least 8 characters";
+      if (formData.password !== formData.password_confirmation)        e.password_confirmation = "Passwords do not match";
+    }
+    if (step === 2) {
+      if (!formData.address?.trim() || formData.address.trim().length < 5) e.address  = "Address must be at least 5 characters";
+      if (!formData.city)    e.city    = "City required";
+      if (!formData.state)   e.state   = "Province required";
+      if (!formData.zip_code) e.zip_code = "ZIP code required";
+    }
+    if (step === 3) {
+      if (!formData.blood_type) e.blood_type = "Blood type required";
+    }
+    return e;
+  };
 
-    // Initialize users from localStorage or create sample data
-    useEffect(() => {
-      const userData = localStorage.getItem("admin_user");
-      if (userData) setUser(JSON.parse(userData));
-      else navigate("/login");
+  const handleNext = () => {
+    const e = validate(formStep);
+    if (Object.keys(e).length) { setErrors(e); return; }
+    setErrors({});
+    setFormStep(s => s + 1);
+  };
 
-      const storedUsers = localStorage.getItem("users");
-      const storedActivities = localStorage.getItem("activities");
+  const handlePrev = () => { setErrors({}); setFormStep(s => s - 1); };
 
-      if (storedUsers) {
-        setUsers(JSON.parse(storedUsers));
-      } else {
-        const cities = ["Kathmandu", "Pokhara", "Lalitpur", "Bhaktapur", "Biratnagar"];
-        const states = ["Bagmati", "Gandaki", "Province 1", "Lumbini", "Karnali"];
-        const genders = ["Male", "Female", "Other"];
-        
-        const sampleUsers = Array.from({ length: 50 }, (_, i) => ({
-          id: i + 1,
-          name: `User ${i + 1}`,
-          email: `user${i + 1}@example.com`,
-          phone: `98123${String(45678 + i).padStart(5, "0")}`,
-          dateOfBirth: new Date(1990 + (i % 30), i % 12, (i % 28) + 1).toISOString().split("T")[0],
-          gender: genders[i % 3],
-          address: `Street ${i + 1}, Ward ${(i % 10) + 1}`,
-          city: cities[i % cities.length],
-          state: states[i % states.length],
-          zipCode: `44600${i % 10}`,
-          country: "Nepal",
-          type: i % 2 === 0 ? "Donor" : "Recipient",
-          role: i % 7 === 0 ? "admin" : "general",
-          status: i % 5 === 0 ? "pending" : "active",
-          bloodType: ["A+", "B+", "O+", "AB+", "A-", "B-", "O-", "AB-"][i % 8],
-          medicalConditions: i % 3 === 0 ? "None" : "Hypertension",
-          notes: `User notes for ${i + 1}`,
-          createdAt: new Date(Date.now() - i * 86400000).toISOString(),
-        }));
-        setUsers(sampleUsers);
-        localStorage.setItem("users", JSON.stringify(sampleUsers));
-      }
+  // ── CRUD ───────────────────────────────────────────────────────────────────
+  // CORE FIX: both store and update now send multipart/form-data so Laravel's
+  // 'image' validation rule receives a real UploadedFile, not a JSON string.
 
-      if (storedActivities) {
-        setActivities(JSON.parse(storedActivities));
-      } else {
-        const initialActivities = [];
-        setActivities(initialActivities);
-        localStorage.setItem("activities", JSON.stringify(initialActivities));
-      }
-    }, [navigate]);
-
-    useEffect(() => {
-      if (users.length > 0) {
-        localStorage.setItem("users", JSON.stringify(users));
-      }
-    }, [users]);
-
-    useEffect(() => {
-      if (activities.length > 0) {
-        localStorage.setItem("activities", JSON.stringify(activities));
-      }
-    }, [activities]);
-
-    const stats = [
-      { label: "Total Users", value: users.length, color: "blue", icon: Users },
-      {
-        label: "Admin Users",
-        value: users.filter((u) => u.role === "admin").length,
-        color: "purple",
-        icon: Shield,
-      },
-      {
-        label: "Active Donors",
-        value: users.filter((u) => u.type === "Donor" && u.status === "active").length,
-        color: "green",
-        icon: UserCheck,
-      },
-      {
-        label: "Pending Users",
-        value: users.filter((u) => u.status === "pending").length,
-        color: "orange",
-        icon: Clock,
-      },
+  // Helper — builds a FormData from the current formData state + raw image file.
+  // Fields with empty-string values are omitted so Laravel 'sometimes' rules work.
+  const buildFormData = (overrides = {}) => {
+    const fd = new FormData();
+    const merged = { ...formData, ...overrides };
+    const textFields = [
+      "name","email","phone","date_of_birth","gender",
+      "address","city","state","zip_code","country",
+      "blood_type","role","status","medical_conditions","notes",
+      "password","password_confirmation",
     ];
-
-    const filteredUsers = users.filter((u) => {
-      const matchesSearch =
-        u.name.toLowerCase().includes(search.toLowerCase()) ||
-        u.email.toLowerCase().includes(search.toLowerCase()) ||
-        u.phone.includes(search);
-
-      const matchesRole =
-        roleFilter === "all" ||
-        (roleFilter === "admin" && u.role === "admin") ||
-        (roleFilter === "general" && u.role === "general");
-
-      return matchesSearch && matchesRole;
+    textFields.forEach(key => {
+      if (merged[key] !== "" && merged[key] != null) fd.append(key, merged[key]);
     });
+    // Append the real File object only when the user has picked one this session.
+    // imageFileRef.current is null when editing without changing the photo.
+    if (imageFileRef.current instanceof File) {
+      fd.append("profile_image", imageFileRef.current);
+    }
+    return fd;
+  };
 
-    const totalPages = Math.ceil(filteredUsers.length / itemsPerPage);
-    const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = startIndex + itemsPerPage;
-    const currentUsers = filteredUsers.slice(startIndex, endIndex);
+  const handleAddUser = async () => {
+    const e = validate(3);
+    if (Object.keys(e).length) { setErrors(e); return; }
+    setSubmitting(true);
+    try {
+      await apiFetch("/users", { method: "POST", body: buildFormData() });
+      showToast("User created successfully");
+      resetForm();
+      setModalOpen(false);
+      fetchUsers(page, search, roleFilter);
+    } catch (err) {
+      setErrors({ submit: err.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
-    useEffect(() => {
-      setCurrentPage(1);
-    }, [search, roleFilter]);
-
-    // Validation for each step
-    const validateStep = (step) => {
-      const newErrors = {};
-
-      if (step === 1) {
-        if (!newUser.name || newUser.name.trim().length < 2) {
-          newErrors.name = "Name must be at least 2 characters";
-        }
-
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!newUser.email || !emailRegex.test(newUser.email)) {
-          newErrors.email = "Please enter a valid email address";
-        }
-
-        const phoneRegex = /^[0-9]{10,}$/;
-        if (!newUser.phone || !phoneRegex.test(newUser.phone.replace(/\s/g, ""))) {
-          newErrors.phone = "Please enter a valid phone number";
-        }
-
-        if (!newUser.dateOfBirth) {
-          newErrors.dateOfBirth = "Date of birth is required";
-        }
-
-        if (!newUser.gender) {
-          newErrors.gender = "Please select a gender";
-        }
+  const handleUpdateUser = async () => {
+    const e = validate(1);
+    if (formData.password) {
+      if (formData.password.length < 8)
+        e.password = "Password must be at least 8 characters";
+      if (formData.password !== formData.password_confirmation)
+        e.password_confirmation = "Passwords do not match";
+    }
+    if (Object.keys(e).length) { setErrors(e); return; }
+    setSubmitting(true);
+    try {
+      // Laravel does not parse multipart bodies on PUT/PATCH requests.
+      // The standard workaround is to POST with a hidden _method=PUT field,
+      // which Laravel's method spoofing middleware converts automatically.
+      const fd = buildFormData({
+        _method: "PUT",
+        // Strip password fields when the admin left them blank
+        ...(formData.password ? {} : { password: "", password_confirmation: "" }),
+      });
+      if (!formData.password) {
+        fd.delete("password");
+        fd.delete("password_confirmation");
       }
+      await apiFetch(`/users/${selectedUser.id}`, { method: "POST", body: fd });
+      showToast("User updated successfully");
+      setEditModal(false);
+      setSelectedUser(null);
+      resetForm();
+      fetchUsers(page, search, roleFilter);
+    } catch (err) {
+      setErrors({ submit: err.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
-      if (step === 2) {
-        if (!newUser.address || newUser.address.trim().length < 5) {
-          newErrors.address = "Address must be at least 5 characters";
-        }
+  const handleDeleteUser = async (id) => {
+    if (!window.confirm("Permanently delete this user?")) return;
+    try {
+      await apiFetch(`/users/${id}`, { method: "DELETE" });
+      showToast("User deleted");
+      fetchUsers(page, search, roleFilter);
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
 
-        if (!newUser.city) {
-          newErrors.city = "City is required";
-        }
+  const openEdit = (u) => {
+    setSelectedUser(u);
+    setFormData({ ...BLANK, ...u, role: u.role || u.type || "user",
+      // Never put the server-returned image value (path/base64) back into
+      // formData — it would be re-sent as a string and break validation.
+      // The existing image is already shown via imagePreview below.
+      profile_image: "",
+      password: "", password_confirmation: "",
+    });
+    imageFileRef.current = null;            // no new file picked yet
+    setImagePreview(u.profile_image || null);
+    setErrors({});
+    setEditModal(true);
+  };
 
-        if (!newUser.state) {
-          newErrors.state = "State/Province is required";
-        }
+  const openView = (u) => { setSelectedUser(u); setViewModal(true); };
 
-        if (!newUser.zipCode) {
-          newErrors.zipCode = "ZIP code is required";
-        }
-      }
+  const resetForm = () => {
+    setFormData(BLANK);
+    setImagePreview(null);
+    setErrors({});
+    setFormStep(1);
+    setShowPassword(false);
+    setShowConfirm(false);
+    setShowEditPassword(false);
+    imageFileRef.current = null;
+  };
 
-      if (step === 3) {
-        if (!newUser.bloodType) {
-          newErrors.bloodType = "Blood type is required";
-        }
-      }
+  // ── export ─────────────────────────────────────────────────────────────────
+  const handleExport = () => {
+    const rows = [
+      ["ID","UID","Name","Email","Phone","DOB","Gender","Address","City","State","ZIP","Country","Blood","Role","Status","Created"],
+      ...users.map(u => [
+        u.id, u.uid, u.name, u.email, u.phone, u.date_of_birth, u.gender,
+        u.address, u.city, u.state, u.zip_code, u.country,
+        u.blood_type,
+        u.role || u.type,  // FIX #6: export whichever is present
+        u.status,
+        new Date(u.created_at).toLocaleDateString(),
+      ]),
+    ].map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
 
-      return newErrors;
-    };
+    const blob = new Blob([rows], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `users_${Date.now()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
 
-    const addActivity = (action, userName, userType) => {
-      const newActivity = {
-        id: Date.now(),
-        action,
-        userName,
-        userType,
-        timestamp: new Date().toISOString(),
-      };
-      const updatedActivities = [newActivity, ...activities].slice(0, 10);
-      setActivities(updatedActivities);
-      localStorage.setItem("activities", JSON.stringify(updatedActivities));
-    };
+  const timeAgo = (ts) => {
+    if (!ts) return "—";
+    const s = Math.floor((Date.now() - new Date(ts)) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return `${Math.floor(s / 86400)}d ago`;
+  };
 
-    const handleNextStep = () => {
-      const validationErrors = validateStep(formStep);
-      if (Object.keys(validationErrors).length > 0) {
-        setErrors(validationErrors);
-        return;
-      }
-      setErrors({});
-      setFormStep(formStep + 1);
-    };
+  const renderPages = () => {
+    // FIX #4: meta values are guaranteed non-null via normalizeMeta
+    const total = meta.last_page;
+    const cur   = meta.current_page;
+    const pages = [];
+    if (total <= 7) {
+      for (let i = 1; i <= total; i++) pages.push(i);
+    } else if (cur <= 4) {
+      pages.push(1, 2, 3, 4, 5, "…", total);
+    } else if (cur >= total - 3) {
+      pages.push(1, "…", total-4, total-3, total-2, total-1, total);
+    } else {
+      pages.push(1, "…", cur-1, cur, cur+1, "…", total);
+    }
+    return pages;
+  };
 
-    const handlePrevStep = () => {
-      setErrors({});
-      setFormStep(formStep - 1);
-    };
+  // ── derived role label (for display only) ─────────────────────────────────
+  // FIX #6: helper so table/view always reads from 'role', falling back to legacy 'type'
+  const userRole = (u) => u.role || u.type || "user";
 
-    const handleAddUser = async () => {
-      const validationErrors = validateStep(3);
-      if (Object.keys(validationErrors).length > 0) {
-        setErrors(validationErrors);
-        return;
-      }
+  // ══════════════════════════════════════════════════════════════════════════
+  return (
+    <div className="flex-1 flex flex-col min-h-screen bg-[#F4F6FA] font-[system-ui]">
 
-      if (users.some((u) => u.email.toLowerCase() === newUser.email.toLowerCase())) {
-        setErrors({ email: "This email is already registered" });
-        setFormStep(1);
-        return;
-      }
+      {/* ── Toast ── */}
+      {toast && (
+        <div className={`fixed top-5 right-5 z-[200] flex items-center gap-3 px-5 py-3 rounded-xl shadow-xl text-sm font-medium transition-all
+          ${toast.type === "error" ? "bg-red-600 text-white" : "bg-green-600 text-white"}`}>
+          {toast.type === "error" ? <AlertCircle size={16}/> : <Check size={16}/>}
+          {toast.msg}
+        </div>
+      )}
 
-      setLoading(true);
+      <main className="flex-1 p-6 lg:p-8 space-y-6 max-w-screen-2xl mx-auto w-full">
 
-      try {
-        // Demo API call - Replace with actual API integration
-        const response = await demoFetch(
-          `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.CREATE_USER}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(newUser),
-          }
-        );
-
-        if (response.success) {
-          const id = users.length > 0 ? Math.max(...users.map((u) => u.id)) + 1 : 1;
-          const newUserData = {
-            id,
-            ...newUser,
-            createdAt: new Date().toISOString(),
-          };
-
-          setUsers([...users, newUserData]);
-          addActivity("joined", newUser.name, newUser.type);
-          
-          // Reset form
-          setNewUser({
-            name: "",
-            email: "",
-            phone: "",
-            dateOfBirth: "",
-            gender: "",
-            address: "",
-            city: "",
-            state: "",
-            zipCode: "",
-            country: "Nepal",
-            bloodType: "",
-            type: "Donor",
-            role: "general",
-            status: "active",
-            medicalConditions: "",
-            notes: "",
-          });
-          setErrors({});
-          setFormStep(1);
-          setModalOpen(false);
-        }
-      } catch (error) {
-        console.error("Error adding user:", error);
-        setErrors({ submit: "Failed to add user. Please try again." });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    const handleViewUser = (userId) => {
-      const userToView = users.find((u) => u.id === userId);
-      setSelectedUser(userToView);
-      setViewModalOpen(true);
-    };
-
-    const handleEditUser = (userId) => {
-      const userToEdit = users.find((u) => u.id === userId);
-      setSelectedUser(userToEdit);
-      setNewUser({ ...userToEdit });
-      setEditModalOpen(true);
-    };
-
-    const handleUpdateUser = async () => {
-      const validationErrors = validateStep(1);
-      if (Object.keys(validationErrors).length > 0) {
-        setErrors(validationErrors);
-        return;
-      }
-
-      if (
-        users.some(
-          (u) =>
-            u.email.toLowerCase() === newUser.email.toLowerCase() && u.id !== selectedUser.id
-        )
-      ) {
-        setErrors({ email: "This email is already registered" });
-        return;
-      }
-
-      setLoading(true);
-
-      try {
-        // Demo API call - Replace with actual API integration
-        await demoFetch(
-          `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.UPDATE_USER}/${selectedUser.id}`,
-          {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(newUser),
-          }
-        );
-
-        const updatedUsers = users.map((u) =>
-          u.id === selectedUser.id ? { ...u, ...newUser } : u
-        );
-        setUsers(updatedUsers);
-        addActivity("updated", newUser.name, newUser.type);
-        
-        setNewUser({
-          name: "",
-          email: "",
-          phone: "",
-          dateOfBirth: "",
-          gender: "",
-          address: "",
-          city: "",
-          state: "",
-          zipCode: "",
-          country: "Nepal",
-          bloodType: "",
-          type: "Donor",
-          role: "general",
-          status: "active",
-          medicalConditions: "",
-          notes: "",
-        });
-        setErrors({});
-        setEditModalOpen(false);
-        setSelectedUser(null);
-      } catch (error) {
-        console.error("Error updating user:", error);
-        setErrors({ submit: "Failed to update user. Please try again." });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    const handleDeleteUser = async (userId) => {
-      if (window.confirm("Are you sure you want to delete this user?")) {
-        setLoading(true);
-        try {
-          // Demo API call - Replace with actual API integration
-          await demoFetch(
-            `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.DELETE_USER}/${userId}`,
-            {
-              method: "DELETE",
-            }
-          );
-
-          const userToDelete = users.find((u) => u.id === userId);
-          setUsers(users.filter((u) => u.id !== userId));
-          addActivity("removed", userToDelete.name, userToDelete.type);
-        } catch (error) {
-          console.error("Error deleting user:", error);
-        } finally {
-          setLoading(false);
-        }
-      }
-    };
-
-    const handleExportUsers = () => {
-      const csvContent = [
-        ["ID", "Name", "Email", "Phone", "DOB", "Gender", "Address", "City", "State", "ZIP", "Country", "Blood Type", "Type", "Role", "Status", "Medical Conditions", "Created At"],
-        ...filteredUsers.map((u) => [
-          u.id,
-          u.name,
-          u.email,
-          u.phone,
-          u.dateOfBirth,
-          u.gender,
-          u.address,
-          u.city,
-          u.state,
-          u.zipCode,
-          u.country,
-          u.bloodType,
-          u.type,
-          u.role,
-          u.status,
-          u.medicalConditions || "",
-          new Date(u.createdAt).toLocaleDateString(),
-        ]),
-      ]
-        .map((row) => row.join(","))
-        .join("\n");
-
-      const blob = new Blob([csvContent], { type: "text/csv" });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `users_${new Date().toISOString().split("T")[0]}.csv`;
-      a.click();
-      window.URL.revokeObjectURL(url);
-    };
-
-    const timeAgo = (timestamp) => {
-      const now = new Date();
-      const past = new Date(timestamp);
-      const diffInSeconds = Math.floor((now - past) / 1000);
-
-      if (diffInSeconds < 60) return "Just now";
-      if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)} minutes ago`;
-      if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} hours ago`;
-      if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)} days ago`;
-      return past.toLocaleDateString();
-    };
-
-    const goToPage = (page) => {
-      if (page >= 1 && page <= totalPages) {
-        setCurrentPage(page);
-      }
-    };
-
-    const renderPageNumbers = () => {
-      const pages = [];
-      const maxVisiblePages = 5;
-
-      if (totalPages <= maxVisiblePages) {
-        for (let i = 1; i <= totalPages; i++) {
-          pages.push(i);
-        }
-      } else {
-        if (currentPage <= 3) {
-          pages.push(1, 2, 3, 4, "...", totalPages);
-        } else if (currentPage >= totalPages - 2) {
-          pages.push(1, "...", totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
-        } else {
-          pages.push(1, "...", currentPage - 1, currentPage, currentPage + 1, "...", totalPages);
-        }
-      }
-
-      return pages;
-    };
-
-    return (
-      <div className="flex-1 flex flex-col overflow-hidden bg-gray-50">
-        <main className="flex-1 p-4 md:p-8 overflow-y-auto">
-          {/* Stats Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-8">
-            {stats.map((stat, index) => (
-              <div
-                key={index}
-                className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1"
-              >
-                <div className="flex items-start justify-between mb-4">
-                  <div
-                    className={`p-3 rounded-xl bg-gradient-to-br ${
-                      stat.color === "blue"
-                        ? "from-blue-500 to-blue-600"
-                        : stat.color === "purple"
-                        ? "from-purple-500 to-purple-600"
-                        : stat.color === "green"
-                        ? "from-green-500 to-green-600"
-                        : "from-orange-500 to-orange-600"
-                    } shadow-lg`}
-                  >
-                    <stat.icon className="text-white" size={24} />
-                  </div>
-                </div>
-                <h3 className="text-gray-600 text-sm font-medium mb-1">{stat.label}</h3>
-                <p className="text-3xl font-bold text-gray-800">{stat.value}</p>
-              </div>
-            ))}
+        {/* ── Page Header ── */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-800 tracking-tight">User Management</h1>
+            <p className="text-sm text-gray-500 mt-0.5">Manage platform users, roles, and permissions</p>
           </div>
-
-          {/* Users Table */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
-            {/* Filter Tabs */}
-            <div className="flex flex-wrap items-center gap-3 mb-6 pb-6 border-b border-gray-200">
-              <button
-                onClick={() => setRoleFilter("all")}
-                className={`px-4 py-2 rounded-xl font-semibold transition-all duration-300 flex items-center gap-2 ${
-                  roleFilter === "all"
-                    ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white shadow-lg"
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                }`}
-              >
-                <Users size={16} />
-                All Users
-                <span
-                  className={`px-2 py-0.5 rounded-lg text-xs font-bold ${
-                    roleFilter === "all" ? "bg-white/20" : "bg-gray-200"
-                  }`}
-                >
-                  {users.length}
-                </span>
-              </button>
-
-              <button
-                onClick={() => setRoleFilter("admin")}
-                className={`px-4 py-2 rounded-xl font-semibold transition-all duration-300 flex items-center gap-2 ${
-                  roleFilter === "admin"
-                    ? "bg-gradient-to-r from-purple-500 to-purple-600 text-white shadow-lg"
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                }`}
-              >
-                <Shield size={16} />
-                Admin
-                <span
-                  className={`px-2 py-0.5 rounded-lg text-xs font-bold ${
-                    roleFilter === "admin" ? "bg-white/20" : "bg-gray-200"
-                  }`}
-                >
-                  {users.filter((u) => u.role === "admin").length}
-                </span>
-              </button>
-
-              <button
-                onClick={() => setRoleFilter("general")}
-                className={`px-4 py-2 rounded-xl font-semibold transition-all duration-300 flex items-center gap-2 ${
-                  roleFilter === "general"
-                    ? "bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-lg"
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                }`}
-              >
-                <User size={16} />
-                General Users
-                <span
-                  className={`px-2 py-0.5 rounded-lg text-xs font-bold ${
-                    roleFilter === "general" ? "bg-white/20" : "bg-gray-200"
-                  }`}
-                >
-                  {users.filter((u) => u.role === "general").length}
-                </span>
-              </button>
-            </div>
-
-            {/* Search and Actions */}
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-6 gap-4">
-              <div className="flex items-center gap-3">
-                <h3 className="text-lg font-bold text-gray-800">
-                  {roleFilter === "all"
-                    ? "All Users"
-                    : roleFilter === "admin"
-                    ? "Admin Users"
-                    : "General Users"}
-                </h3>
-                <span className="text-sm text-gray-500">
-                  Showing {startIndex + 1}-{Math.min(endIndex, filteredUsers.length)} of{" "}
-                  {filteredUsers.length}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 w-full md:w-auto flex-wrap">
-                <div className="relative flex-1 md:flex-none">
-                  <Search
-                    size={16}
-                    className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Search users..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="pl-10 pr-4 py-2 w-full md:w-64 rounded-xl border border-gray-200 focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all text-sm"
-                  />
-                </div>
-
-                <button
-                  className="py-2 px-4 rounded-xl bg-gray-100 text-gray-700 font-semibold hover:bg-gray-200 transition-all duration-300 flex items-center gap-2 text-sm"
-                  onClick={handleExportUsers}
-                >
-                  <Download size={16} /> Export
-                </button>
-
-                <button
-                  className="py-2 px-4 rounded-xl bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white font-semibold hover:shadow-2xl transition-all duration-300 flex items-center gap-2 text-sm"
-                  onClick={() => setModalOpen(true)}
-                >
-                  <UserPlus size={16} /> Add User
-                </button>
-              </div>
-            </div>
-
-            {/* Table */}
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-gray-200">
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      User
-                    </th>
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      Contact
-                    </th>
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      Location
-                    </th>
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      Type
-                    </th>
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      Role
-                    </th>
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      Blood
-                    </th>
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      Status
-                    </th>
-                    <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {currentUsers.length === 0 ? (
-                    <tr>
-                      <td colSpan="8" className="py-12 text-center text-gray-500">
-                        <Users size={48} className="mx-auto mb-3 text-gray-300" />
-                        <p className="font-medium">No users found</p>
-                        <p className="text-sm text-gray-400 mt-1">
-                          Try adjusting your search or filters
-                        </p>
-                      </td>
-                    </tr>
-                  ) : (
-                    currentUsers.map((u) => (
-                      <tr
-                        key={u.id}
-                        className="border-b border-gray-100 hover:bg-gray-50 transition-colors"
-                      >
-                        <td className="py-4 px-4">
-                          <div className="flex items-center gap-3">
-                            <div
-                              className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold text-sm ${
-                                u.type === "Donor"
-                                  ? "bg-gradient-to-br from-red-500 to-rose-600"
-                                  : "bg-gradient-to-br from-blue-500 to-blue-600"
-                              }`}
-                            >
-                              {u.name
-                                .split(" ")
-                                .map((n) => n[0])
-                                .join("")
-                                .toUpperCase()}
-                            </div>
-                            <div>
-                              <span className="font-medium text-gray-800 block">{u.name}</span>
-                              <span className="text-xs text-gray-500">{u.gender}</span>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="py-4 px-4 text-sm text-gray-600">
-                          <div className="flex items-center gap-2 mb-1">
-                            <Mail size={14} className="text-gray-400" />
-                            <span className="truncate max-w-[200px]">{u.email}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Phone size={14} className="text-gray-400" />
-                            <span>{u.phone}</span>
-                          </div>
-                        </td>
-                        <td className="py-4 px-4 text-sm text-gray-600">
-                          <div className="flex items-center gap-2">
-                            <MapPin size={14} className="text-gray-400" />
-                            <span>{u.city}, {u.state}</span>
-                          </div>
-                        </td>
-                        <td className="py-4 px-4">
-                          <span
-                            className={`text-sm font-medium ${
-                              u.type === "Donor" ? "text-red-600" : "text-blue-600"
-                            }`}
-                          >
-                            {u.type}
-                          </span>
-                        </td>
-                        <td className="py-4 px-4">
-                          <span
-                            className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg ${
-                              u.role === "admin"
-                                ? "bg-purple-100 text-purple-700"
-                                : "bg-blue-100 text-blue-700"
-                            }`}
-                          >
-                            {u.role === "admin" ? (
-                              <Shield size={12} />
-                            ) : (
-                              <User size={12} />
-                            )}
-                            {u.role === "admin" ? "Admin" : "General"}
-                          </span>
-                        </td>
-                        <td className="py-4 px-4">
-                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-red-50 text-red-700 text-xs font-semibold">
-                            <Droplet size={12} />
-                            {u.bloodType}
-                          </span>
-                        </td>
-                        <td className="py-4 px-4">
-                          <span
-                            className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg ${
-                              u.status === "active"
-                                ? "bg-green-100 text-green-700"
-                                : "bg-orange-100 text-orange-700"
-                            }`}
-                          >
-                            <CheckCircle size={12} />
-                            {u.status === "active" ? "Active" : "Pending"}
-                          </span>
-                        </td>
-                        <td className="py-4 px-4">
-                          <div className="flex items-center gap-2">
-                            <button
-                              className="p-2 rounded-lg hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                              onClick={() => handleViewUser(u.id)}
-                              title="View user"
-                            >
-                              <Eye size={16} />
-                            </button>
-                            <button
-                              className="p-2 rounded-lg hover:bg-green-50 hover:text-green-600 transition-colors"
-                              onClick={() => handleEditUser(u.id)}
-                              title="Edit user"
-                            >
-                              <Edit size={16} />
-                            </button>
-                            <button
-                              className="p-2 rounded-lg hover:bg-red-50 hover:text-red-600 transition-colors"
-                              onClick={() => handleDeleteUser(u.id)}
-                              title="Delete user"
-                              disabled={loading}
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between mt-6 pt-6 border-t border-gray-200 flex-wrap gap-4">
-                <div className="text-sm text-gray-600">
-                  Page {currentPage} of {totalPages}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => goToPage(currentPage - 1)}
-                    disabled={currentPage === 1}
-                    className={`p-2 rounded-lg transition-all ${
-                      currentPage === 1
-                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                    }`}
-                  >
-                    <ChevronLeft size={18} />
-                  </button>
-
-                  <div className="flex items-center gap-1">
-                    {renderPageNumbers().map((page, index) =>
-                      page === "..." ? (
-                        <span key={`ellipsis-${index}`} className="px-3 py-2 text-gray-400">
-                          ...
-                        </span>
-                      ) : (
-                        <button
-                          key={page}
-                          onClick={() => goToPage(page)}
-                          className={`px-3 py-2 rounded-lg transition-all font-medium text-sm ${
-                            currentPage === page
-                              ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white shadow-lg"
-                              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                          }`}
-                        >
-                          {page}
-                        </button>
-                      )
-                    )}
-                  </div>
-
-                  <button
-                    onClick={() => goToPage(currentPage + 1)}
-                    disabled={currentPage === totalPages}
-                    className={`p-2 rounded-lg transition-all ${
-                      currentPage === totalPages
-                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                    }`}
-                  >
-                    <ChevronRight size={18} />
-                  </button>
-                </div>
-
-                <div className="text-sm text-gray-600">
-                  {filteredUsers.length} total users
-                </div>
-              </div>
-            )}
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setFetchError(null); fetchUsers(page, search, roleFilter); }} className="p-2.5 rounded-xl border border-gray-200 bg-white text-gray-500 hover:text-gray-700 hover:border-gray-300 transition-all shadow-sm">
+              <RefreshCw size={16} className={loading ? "animate-spin" : ""}/>
+            </button>
+            <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200 text-sm font-semibold shadow-sm transition-all duration-300">
+              <Download size={15}/> Export
+            </button>
+            <button onClick={() => { resetForm(); setModalOpen(true); }}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white text-sm font-semibold hover:shadow-2xl transition-all duration-300">
+              <UserPlus size={15}/> Add User
+            </button>
           </div>
+        </div>
 
-          {/* Recent Activity */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-bold text-gray-800">Recent Activity</h3>
-              <Activity size={20} className="text-gray-400" />
+        {/* ── Stats ── */}
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          {stats.map((s, i) => (
+            <div key={i} className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 flex items-start gap-4">
+              <div className={`p-3 rounded-xl shadow-lg bg-gradient-to-br ${
+                s.color === "blue"   ? "from-blue-500 to-blue-600"     :
+                s.color === "purple" ? "from-purple-500 to-purple-600" :
+                s.color === "green"  ? "from-green-500 to-green-600"   :
+                                       "from-orange-500 to-orange-600"
+              }`}>
+                <s.icon className="text-white" size={24}/>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600 font-medium">{s.label}</p>
+                <p className="text-3xl font-bold text-gray-800 mt-0.5">{s.value}</p>
+              </div>
             </div>
-            <div className="space-y-4">
-              {activities.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <Activity size={48} className="mx-auto mb-2 text-gray-300" />
-                  <p>No recent activity</p>
-                </div>
-              ) : (
-                activities.map((activity) => (
-                  <div
-                    key={activity.id}
-                    className="flex items-start gap-4 p-4 rounded-xl hover:bg-gray-50 transition-colors"
-                  >
-                    <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                        activity.action === "joined"
-                          ? "bg-green-100"
-                          : activity.action === "updated"
-                          ? "bg-blue-100"
-                          : "bg-red-100"
-                      }`}
-                    >
-                      {activity.action === "joined" ? (
-                        <UserPlus size={18} className="text-green-600" />
-                      ) : activity.action === "updated" ? (
-                        <Edit size={18} className="text-blue-600" />
-                      ) : (
-                        <Trash2 size={18} className="text-red-600" />
-                      )}
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-gray-800">
-                        <span className="font-semibold">{activity.userName}</span>{" "}
-                        {activity.action === "joined"
-                          ? "joined the platform"
-                          : activity.action === "updated"
-                          ? "was updated"
-                          : "was removed"}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-1">
-                        {timeAgo(activity.timestamp)}
-                      </p>
-                    </div>
-                    <span
-                      className={`text-xs font-medium px-2 py-1 rounded-lg ${
-                        activity.userType === "Donor"
-                          ? "bg-red-100 text-red-700"
-                          : "bg-blue-100 text-blue-700"
-                      }`}
-                    >
-                      {activity.userType}
-                    </span>
-                  </div>
-                ))
+          ))}
+        </div>
+
+        {/* ── Table Card ── */}
+        <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
+
+          {/* Table Toolbar */}
+          <div className="px-6 py-4 border-b border-gray-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            {/* Role tabs — FIX #2: tabs now use "user" not "general" to match role field */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {[
+                { key: "all",   label: "All Users", count: meta.total },
+                { key: "admin", label: "Admin",     count: users.filter(u => userRole(u) === "admin").length },
+                { key: "user",  label: "General",   count: users.filter(u => userRole(u) !== "admin").length },
+              ].map(tab => (
+                <button key={tab.key} onClick={() => setRoleFilter(tab.key)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl font-semibold transition-all duration-300 text-sm ${
+                    tab.key === "all" && roleFilter === tab.key
+                      ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white shadow-lg"
+                      : tab.key === "admin" && roleFilter === tab.key
+                      ? "bg-gradient-to-r from-purple-500 to-purple-600 text-white shadow-lg"
+                      : tab.key === "user" && roleFilter === tab.key
+                      ? "bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-lg"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  }`}>
+                  {tab.label}
+                  <span className={`px-2 py-0.5 rounded-lg text-xs font-bold ${
+                    roleFilter === tab.key ? "bg-white/20" : "bg-gray-200"
+                  }`}>{tab.count}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Search — FIX #7: debounce is handled in useEffect; input is unthrottled */}
+            <div className="relative w-full md:w-80">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+              <input
+                type="text"
+                placeholder="Search by UID, name, email, phone…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full pl-9 pr-9 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all placeholder-gray-400"
+              />
+              {search && (
+                <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  <X size={14}/>
+                </button>
               )}
             </div>
           </div>
-        </main>
 
-        {/* Multi-Step Add User Modal */}
-        {modalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
-            <div className="bg-white rounded-2xl p-8 w-full max-w-2xl shadow-2xl relative my-8">
-              <button
-                className="absolute top-4 right-4 text-gray-500 hover:text-gray-800 transition-colors z-10"
-                onClick={() => {
-                  setModalOpen(false);
-                  setErrors({});
-                  setFormStep(1);
-                  setNewUser({
-                    name: "",
-                    email: "",
-                    phone: "",
-                    dateOfBirth: "",
-                    gender: "",
-                    address: "",
-                    city: "",
-                    state: "",
-                    zipCode: "",
-                    country: "Nepal",
-                    bloodType: "",
-                    type: "Donor",
-                    role: "general",
-                    status: "active",
-                    medicalConditions: "",
-                    notes: "",
-                  });
-                }}
-              >
-                <X size={24} />
-              </button>
-
-              {/* Header */}
-              <div className="mb-8">
-                <h2 className="text-2xl font-bold text-gray-800 mb-2">Add New User</h2>
-                <p className="text-gray-500">Fill in the details to create a new user account</p>
-              </div>
-
-              {/* Progress Steps */}
-              <div className="mb-8">
-                <div className="flex items-center justify-between">
-                  {[1, 2, 3].map((step) => (
-                    <React.Fragment key={step}>
-                      <div className="flex flex-col items-center flex-1">
-                        <div
-                          className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg transition-all duration-300 ${
-                            formStep > step
-                              ? "bg-green-500 text-white"
-                              : formStep === step
-                              ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white shadow-lg"
-                              : "bg-gray-200 text-gray-500"
-                          }`}
-                        >
-                          {formStep > step ? <Check size={24} /> : step}
-                        </div>
-                        <span
-                          className={`text-xs mt-2 font-medium ${
-                            formStep >= step ? "text-gray-800" : "text-gray-400"
-                          }`}
-                        >
-                          {step === 1 ? "Basic Info" : step === 2 ? "Address" : "Medical & Role"}
-                        </span>
-                      </div>
-                      {step < 3 && (
-                        <div
-                          className={`flex-1 h-1 mx-2 rounded transition-all duration-300 ${
-                            formStep > step ? "bg-green-500" : "bg-gray-200"
-                          }`}
-                        />
-                      )}
-                    </React.Fragment>
+          {/* Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  {["User", "UID", "Contact", "Location", "Blood", "Role", "Status", "Joined", "Actions"].map(h => (
+                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wide whitespace-nowrap">{h}</th>
                   ))}
-                </div>
-              </div>
-
-              {/* Form Steps */}
-              <form className="space-y-6">
-                {/* Step 1: Basic Information */}
-                {formStep === 1 && (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Full Name <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="John Doe"
-                          value={newUser.name}
-                          onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.name ? "border-red-500" : "border-gray-200"
-                          }`}
-                        />
-                        {errors.name && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.name}
-                          </p>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Email Address <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="email"
-                          placeholder="john.doe@example.com"
-                          value={newUser.email}
-                          onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.email ? "border-red-500" : "border-gray-200"
-                          }`}
-                        />
-                        {errors.email && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.email}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Phone Number <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="9812345678"
-                          value={newUser.phone}
-                          onChange={(e) => setNewUser({ ...newUser, phone: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.phone ? "border-red-500" : "border-gray-200"
-                          }`}
-                        />
-                        {errors.phone && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.phone}
-                          </p>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Date of Birth <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="date"
-                          value={newUser.dateOfBirth}
-                          onChange={(e) => setNewUser({ ...newUser, dateOfBirth: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.dateOfBirth ? "border-red-500" : "border-gray-200"
-                          }`}
-                        />
-                        {errors.dateOfBirth && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.dateOfBirth}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Gender <span className="text-red-500">*</span>
-                      </label>
-                      <div className="grid grid-cols-3 gap-3">
-                        {["Male", "Female", "Other"].map((gender) => (
-                          <button
-                            key={gender}
-                            type="button"
-                            onClick={() => setNewUser({ ...newUser, gender })}
-                            className={`py-3 px-4 rounded-xl font-medium transition-all duration-300 ${
-                              newUser.gender === gender
-                                ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white shadow-lg"
-                                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                            }`}
-                          >
-                            {gender}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {loading ? (
+                  <tr><td colSpan={9} className="py-16 text-center">
+                    <RefreshCw size={24} className="animate-spin mx-auto text-gray-300 mb-2"/>
+                    <p className="text-gray-400 text-sm">Loading users…</p>
+                  </td></tr>
+                ) : fetchError ? (
+                  <tr><td colSpan={9} className="py-16 text-center">
+                    <AlertCircle size={40} className="mx-auto text-red-300 mb-3"/>
+                    <p className="text-red-500 font-medium">Failed to load users</p>
+                    <p className="text-gray-400 text-sm mt-1">{fetchError}</p>
+                    <button onClick={() => fetchUsers(page, search, roleFilter)}
+                      className="mt-4 px-4 py-2 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 transition-colors">
+                      Retry
+                    </button>
+                  </td></tr>
+                ) : users.length === 0 ? (
+                  <tr><td colSpan={9} className="py-16 text-center">
+                    <Users size={48} className="mx-auto text-gray-300 mb-3"/>
+                    <p className="text-gray-500 font-medium">No users found</p>
+                    <p className="text-gray-400 text-sm mt-1">Try adjusting your search or filters</p>
+                  </td></tr>
+                ) : (
+                  users.map(u => (
+                    <tr key={u.id} className="hover:bg-gray-50 transition-colors group">
+                      {/* User */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <Avatar user={u} size={9}/>
+                          <div>
+                            <p className="font-semibold text-slate-800 leading-tight">{u.name}</p>
+                            <p className="text-xs text-slate-400 capitalize mt-0.5">{u.gender || "—"}</p>
+                          </div>
+                        </div>
+                      </td>
+                      {/* UID */}
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center gap-1 text-xs font-mono text-slate-400 bg-slate-50 border border-slate-100 px-2 py-1 rounded-md">
+                          <Hash size={10}/>{u.uid ? u.uid.split("-")[0] : u.id}
+                        </span>
+                      </td>
+                      {/* Contact */}
+                      <td className="px-4 py-3 text-slate-600 space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-xs"><Mail size={11} className="text-slate-300"/>{u.email}</div>
+                        <div className="flex items-center gap-1.5 text-xs"><Phone size={11} className="text-slate-300"/>{u.phone || "—"}</div>
+                      </td>
+                      {/* Location */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">
+                          <MapPin size={11} className="text-slate-300"/>
+                          {[u.city, u.state].filter(Boolean).join(", ") || "—"}
+                        </div>
+                      </td>
+                      {/* Blood */}
+                      <td className="px-4 py-3">
+                        {u.blood_type ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-red-50 text-red-600 border border-red-100 text-xs font-bold">
+                            <Droplet size={10}/>{u.blood_type}
+                          </span>
+                        ) : <span className="text-slate-300 text-xs">—</span>}
+                      </td>
+                      {/* Role — FIX #6: unified role field display */}
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium ${roleBadge(userRole(u))}`}>
+                          {userRole(u) === "admin" ? <Shield size={10}/> : <User size={10}/>}
+                          <span className="capitalize">{userRole(u)}</span>
+                        </span>
+                      </td>
+                      {/* Status */}
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium ${statusBadge(u.status)}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${u.status === "active" ? "bg-emerald-500" : u.status === "blocked" ? "bg-red-500" : "bg-amber-500"}`}/>
+                          <span className="capitalize">{u.status}</span>
+                        </span>
+                      </td>
+                      {/* Joined */}
+                      <td className="px-4 py-3 text-xs text-slate-400">{timeAgo(u.created_at)}</td>
+                      {/* Actions */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => openView(u)} className="p-2 rounded-lg text-gray-500 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="View">
+                            <Eye size={15}/>
                           </button>
-                        ))}
-                      </div>
-                      {errors.gender && (
-                        <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                          <AlertCircle size={12} /> {errors.gender}
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                          <button onClick={() => openEdit(u)} className="p-2 rounded-lg text-gray-500 hover:text-green-600 hover:bg-green-50 transition-colors" title="Edit">
+                            <Edit size={15}/>
+                          </button>
+                          <button onClick={() => handleDeleteUser(u.id)} className="p-2 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors" title="Delete">
+                            <Trash2 size={15}/>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
                 )}
-
-                {/* Step 2: Address Information */}
-                {formStep === 2 && (
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Street Address <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Street name, Ward number"
-                        value={newUser.address}
-                        onChange={(e) => setNewUser({ ...newUser, address: e.target.value })}
-                        className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                          errors.address ? "border-red-500" : "border-gray-200"
-                        }`}
-                      />
-                      {errors.address && (
-                        <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                          <AlertCircle size={12} /> {errors.address}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          City <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Kathmandu"
-                          value={newUser.city}
-                          onChange={(e) => setNewUser({ ...newUser, city: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.city ? "border-red-500" : "border-gray-200"
-                          }`}
-                        />
-                        {errors.city && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.city}
-                          </p>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          State/Province <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                          value={newUser.state}
-                          onChange={(e) => setNewUser({ ...newUser, state: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.state ? "border-red-500" : "border-gray-200"
-                          }`}
-                        >
-                          <option value="">Select Province</option>
-                          <option value="Province 1">Province 1</option>
-                          <option value="Madhesh">Madhesh</option>
-                          <option value="Bagmati">Bagmati</option>
-                          <option value="Gandaki">Gandaki</option>
-                          <option value="Lumbini">Lumbini</option>
-                          <option value="Karnali">Karnali</option>
-                          <option value="Sudurpashchim">Sudurpashchim</option>
-                        </select>
-                        {errors.state && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.state}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          ZIP Code <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="44600"
-                          value={newUser.zipCode}
-                          onChange={(e) => setNewUser({ ...newUser, zipCode: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.zipCode ? "border-red-500" : "border-gray-200"
-                          }`}
-                        />
-                        {errors.zipCode && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.zipCode}
-                          </p>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Country
-                        </label>
-                        <input
-                          type="text"
-                          value={newUser.country}
-                          onChange={(e) => setNewUser({ ...newUser, country: e.target.value })}
-                          className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Step 3: Medical & Role Information */}
-                {formStep === 3 && (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Blood Type <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                          value={newUser.bloodType}
-                          onChange={(e) => setNewUser({ ...newUser, bloodType: e.target.value })}
-                          className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all ${
-                            errors.bloodType ? "border-red-500" : "border-gray-200"
-                          }`}
-                        >
-                          <option value="">Select Blood Type</option>
-                          <option value="A+">A+</option>
-                          <option value="A-">A-</option>
-                          <option value="B+">B+</option>
-                          <option value="B-">B-</option>
-                          <option value="O+">O+</option>
-                          <option value="O-">O-</option>
-                          <option value="AB+">AB+</option>
-                          <option value="AB-">AB-</option>
-                        </select>
-                        {errors.bloodType && (
-                          <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
-                            <AlertCircle size={12} /> {errors.bloodType}
-                          </p>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          User Type
-                        </label>
-                        <select
-                          value={newUser.type}
-                          onChange={(e) => setNewUser({ ...newUser, type: e.target.value })}
-                          className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                        >
-                          <option value="Donor">Donor</option>
-                          <option value="Recipient">Recipient</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Role
-                        </label>
-                        <select
-                          value={newUser.role}
-                          onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
-                          className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                        >
-                          <option value="general">General User</option>
-                          <option value="admin">Admin</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Status
-                        </label>
-                        <select
-                          value={newUser.status}
-                          onChange={(e) => setNewUser({ ...newUser, status: e.target.value })}
-                          className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                        >
-                          <option value="active">Active</option>
-                          <option value="pending">Pending</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Medical Conditions
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="e.g., Diabetes, Hypertension (leave empty if none)"
-                        value={newUser.medicalConditions}
-                        onChange={(e) =>
-                          setNewUser({ ...newUser, medicalConditions: e.target.value })
-                        }
-                        className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Additional Notes
-                      </label>
-                      <textarea
-                        placeholder="Any additional information..."
-                        value={newUser.notes}
-                        onChange={(e) => setNewUser({ ...newUser, notes: e.target.value })}
-                        rows={3}
-                        className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all resize-none"
-                      />
-                    </div>
-
-                    {errors.submit && (
-                      <div className="p-4 bg-red-50 border border-red-200 rounded-xl">
-                        <p className="text-red-600 text-sm flex items-center gap-2">
-                          <AlertCircle size={16} /> {errors.submit}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Navigation Buttons */}
-                <div className="flex items-center justify-between pt-6 border-t border-gray-200">
-                  {formStep > 1 ? (
-                    <button
-                      type="button"
-                      onClick={handlePrevStep}
-                      className="px-6 py-3 rounded-xl bg-gray-100 text-gray-700 font-semibold hover:bg-gray-200 transition-all duration-300 flex items-center gap-2"
-                    >
-                      <ArrowLeft size={18} />
-                      Previous
-                    </button>
-                  ) : (
-                    <div></div>
-                  )}
-
-                  {formStep < 3 ? (
-                    <button
-                      type="button"
-                      onClick={handleNextStep}
-                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white font-semibold hover:shadow-2xl transition-all duration-300 flex items-center gap-2"
-                    >
-                      Next
-                      <ArrowRight size={18} />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleAddUser}
-                      disabled={loading}
-                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold hover:shadow-2xl transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {loading ? (
-                        <>
-                          <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
-                          Adding...
-                        </>
-                      ) : (
-                        <>
-                          <Check size={18} />
-                          Add User
-                        </>
-                      )}
-                    </button>
-                  )}
-                </div>
-              </form>
-            </div>
+              </tbody>
+            </table>
           </div>
-        )}
 
-        {/* View User Modal - Enhanced with all details */}
-        {viewModalOpen && selectedUser && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-2xl relative my-8">
-              <button
-                className="absolute top-4 right-4 text-gray-500 hover:text-gray-800 transition-colors"
-                onClick={() => {
-                  setViewModalOpen(false);
-                  setSelectedUser(null);
-                }}
-              >
-                <X size={20} />
-              </button>
-              <h3 className="text-xl font-bold mb-6 text-gray-800">User Details</h3>
-
-              <div className="flex items-center gap-4 mb-6 pb-6 border-b border-gray-200">
-                <div
-                  className={`w-20 h-20 rounded-full flex items-center justify-center text-white font-bold text-2xl ${
-                    selectedUser.type === "Donor"
-                      ? "bg-gradient-to-br from-red-500 to-rose-600"
-                      : "bg-gradient-to-br from-blue-500 to-blue-600"
-                  }`}
-                >
-                  {selectedUser.name
-                    .split(" ")
-                    .map((n) => n[0])
-                    .join("")
-                    .toUpperCase()}
-                </div>
-                <div>
-                  <h4 className="font-bold text-gray-800 text-xl">{selectedUser.name}</h4>
-                  <div className="flex items-center gap-2 mt-2 flex-wrap">
-                    <span
-                      className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg ${
-                        selectedUser.status === "active"
-                          ? "bg-green-100 text-green-700"
-                          : "bg-orange-100 text-orange-700"
-                      }`}
-                    >
-                      <CheckCircle size={12} />
-                      {selectedUser.status === "active" ? "Active" : "Pending"}
-                    </span>
-                    <span
-                      className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-lg ${
-                        selectedUser.role === "admin"
-                          ? "bg-purple-100 text-purple-700"
-                          : "bg-blue-100 text-blue-700"
-                      }`}
-                    >
-                      {selectedUser.role === "admin" ? (
-                        <Shield size={12} />
-                      ) : (
-                        <User size={12} />
-                      )}
-                      {selectedUser.role === "admin" ? "Admin" : "General"}
-                    </span>
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-red-50 text-red-700 text-xs font-semibold">
-                      <Droplet size={12} />
-                      {selectedUser.bloodType}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl">
-                  <Mail size={20} className="text-gray-500 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium mb-1">Email</p>
-                    <p className="text-sm text-gray-800 break-all">{selectedUser.email}</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl">
-                  <Phone size={20} className="text-gray-500 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium mb-1">Phone</p>
-                    <p className="text-sm text-gray-800">{selectedUser.phone}</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl">
-                  <Calendar size={20} className="text-gray-500 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium mb-1">Date of Birth</p>
-                    <p className="text-sm text-gray-800">
-                      {new Date(selectedUser.dateOfBirth).toLocaleDateString("en-US", {
-                        year: "numeric",
-                        month: "long",
-                        day: "numeric",
-                      })}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl">
-                  <User size={20} className="text-gray-500 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium mb-1">Gender</p>
-                    <p className="text-sm text-gray-800">{selectedUser.gender}</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl md:col-span-2">
-                  <MapPin size={20} className="text-gray-500 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium mb-1">Address</p>
-                    <p className="text-sm text-gray-800">
-                      {selectedUser.address}, {selectedUser.city}, {selectedUser.state}{" "}
-                      {selectedUser.zipCode}, {selectedUser.country}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl">
-                  <Users size={20} className="text-gray-500 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium mb-1">User Type</p>
-                    <p
-                      className={`text-sm font-semibold ${
-                        selectedUser.type === "Donor" ? "text-red-600" : "text-blue-600"
-                      }`}
-                    >
-                      {selectedUser.type}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl">
-                  <Clock size={20} className="text-gray-500 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-gray-500 font-medium mb-1">Joined</p>
-                    <p className="text-sm text-gray-800">
-                      {new Date(selectedUser.createdAt).toLocaleDateString("en-US", {
-                        year: "numeric",
-                        month: "long",
-                        day: "numeric",
-                      })}
-                    </p>
-                  </div>
-                </div>
-
-                {selectedUser.medicalConditions && (
-                  <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl md:col-span-2">
-                    <Activity size={20} className="text-gray-500 mt-0.5" />
-                    <div>
-                      <p className="text-xs text-gray-500 font-medium mb-1">Medical Conditions</p>
-                      <p className="text-sm text-gray-800">{selectedUser.medicalConditions}</p>
-                    </div>
-                  </div>
-                )}
-
-                {selectedUser.notes && (
-                  <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl md:col-span-2">
-                    <FileText size={20} className="text-gray-500 mt-0.5" />
-                    <div>
-                      <p className="text-xs text-gray-500 font-medium mb-1">Notes</p>
-                      <p className="text-sm text-gray-800">{selectedUser.notes}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Edit User Modal - Simplified */}
-        {editModalOpen && selectedUser && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-2xl relative my-8">
-              <button
-                className="absolute top-4 right-4 text-gray-500 hover:text-gray-800 transition-colors"
-                onClick={() => {
-                  setEditModalOpen(false);
-                  setSelectedUser(null);
-                  setErrors({});
-                  setNewUser({
-                    name: "",
-                    email: "",
-                    phone: "",
-                    dateOfBirth: "",
-                    gender: "",
-                    address: "",
-                    city: "",
-                    state: "",
-                    zipCode: "",
-                    country: "Nepal",
-                    bloodType: "",
-                    type: "Donor",
-                    role: "general",
-                    status: "active",
-                    medicalConditions: "",
-                    notes: "",
-                  });
-                }}
-              >
-                <X size={20} />
-              </button>
-              <h3 className="text-xl font-bold mb-6 text-gray-800">Edit User</h3>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Full Name
-                    </label>
-                    <input
-                      type="text"
-                      value={newUser.name}
-                      onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                    <input
-                      type="email"
-                      value={newUser.email}
-                      onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-                    <input
-                      type="text"
-                      value={newUser.phone}
-                      onChange={(e) => setNewUser({ ...newUser, phone: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Blood Type
-                    </label>
-                    <select
-                      value={newUser.bloodType}
-                      onChange={(e) => setNewUser({ ...newUser, bloodType: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                    >
-                      <option value="A+">A+</option>
-                      <option value="A-">A-</option>
-                      <option value="B+">B+</option>
-                      <option value="B-">B-</option>
-                      <option value="O+">O+</option>
-                      <option value="O-">O-</option>
-                      <option value="AB+">AB+</option>
-                      <option value="AB-">AB-</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-                    <select
-                      value={newUser.type}
-                      onChange={(e) => setNewUser({ ...newUser, type: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                    >
-                      <option value="Donor">Donor</option>
-                      <option value="Recipient">Recipient</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                    <select
-                      value={newUser.role}
-                      onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                    >
-                      <option value="general">General User</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                    <select
-                      value={newUser.status}
-                      onChange={(e) => setNewUser({ ...newUser, status: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
-                    >
-                      <option value="active">Active</option>
-                      <option value="pending">Pending</option>
-                    </select>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleUpdateUser}
-                  disabled={loading}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white font-semibold hover:shadow-2xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  {loading ? (
-                    <>
-                      <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
-                      Updating...
-                    </>
+          {/* Pagination — FIX #4: meta values are normalized, safe to render */}
+          {meta.last_page > 1 && (
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between flex-wrap gap-3">
+              <p className="text-sm text-gray-600">
+                Page <span className="font-semibold text-gray-800">{meta.current_page}</span> of{" "}
+                <span className="font-semibold text-gray-800">{meta.last_page}</span>
+                {meta.total ? ` · ${meta.total} total users` : ""}
+              </p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={meta.current_page === 1}
+                  className="p-2 rounded-lg bg-gray-100 text-gray-700 disabled:opacity-30 hover:bg-gray-200 transition-all">
+                  <ChevronLeft size={16}/>
+                </button>
+                {renderPages().map((pg, i) =>
+                  pg === "…" ? (
+                    <span key={`e${i}`} className="px-3 py-2 text-gray-400">…</span>
                   ) : (
-                    "Update User"
-                  )}
+                    <button key={pg} onClick={() => setPage(pg)}
+                      className={`px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                        meta.current_page === pg
+                          ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white shadow-lg"
+                          : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                      }`}>{pg}</button>
+                  )
+                )}
+                <button onClick={() => setPage(p => Math.min(meta.last_page, p + 1))} disabled={meta.current_page === meta.last_page}
+                  className="p-2 rounded-lg bg-gray-100 text-gray-700 disabled:opacity-30 hover:bg-gray-200 transition-all">
+                  <ChevronRight size={16}/>
                 </button>
               </div>
             </div>
+          )}
+        </div>
+      </main>
+
+      {/* ══════════════════════════════════════════════════════════════
+          ADD USER MODAL — 3-step wizard
+      ══════════════════════════════════════════════════════════════ */}
+      {modalOpen && (
+        <Modal onClose={() => { setModalOpen(false); resetForm(); }} title="Add New User" subtitle="Complete all steps to create a new user account">
+          <Stepper step={formStep}/>
+
+          {/* Step 1 */}
+          {formStep === 1 && (
+            <div className="space-y-4">
+              <ImageUpload preview={imagePreview} onChange={handleImageChange} onRemove={() => { imageFileRef.current = null; setImagePreview(null); }} error={errors.profile_image}/>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Full Name" required error={errors.name}>
+                  <input type="text" placeholder="Jane Doe" value={formData.name}
+                    onChange={e => setFormData(p => ({ ...p, name: e.target.value }))}
+                    className={input(errors.name)}/>
+                </Field>
+                <Field label="Email Address" required error={errors.email}>
+                  <input type="email" placeholder="jane@example.com" value={formData.email}
+                    onChange={e => setFormData(p => ({ ...p, email: e.target.value }))}
+                    className={input(errors.email)}/>
+                </Field>
+                <Field label="Phone Number" required error={errors.phone}>
+                  <input type="text" placeholder="9800000000" value={formData.phone}
+                    onChange={e => setFormData(p => ({ ...p, phone: e.target.value }))}
+                    className={input(errors.phone)}/>
+                </Field>
+                <Field label="Date of Birth" required error={errors.date_of_birth}>
+                  <input type="date" value={formData.date_of_birth}
+                    onChange={e => setFormData(p => ({ ...p, date_of_birth: e.target.value }))}
+                    className={input(errors.date_of_birth)}/>
+                </Field>
+              </div>
+              <Field label="Gender" required error={errors.gender}>
+                <div className="flex gap-2">
+                  {["male","female","other"].map(g => (
+                    <button key={g} type="button" onClick={() => setFormData(p => ({ ...p, gender: g }))}
+                      className={`flex-1 py-2 rounded-xl text-sm font-semibold border transition-all duration-300 capitalize ${
+                        formData.gender === g ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white border-transparent shadow-lg" : "bg-gray-100 text-gray-700 border-transparent hover:bg-gray-200"
+                      }`}>{g}</button>
+                  ))}
+                </div>
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Password" required error={errors.password}>
+                  <div className="relative">
+                    <Lock size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"/>
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Min. 8 characters"
+                      value={formData.password}
+                      onChange={e => setFormData(p => ({ ...p, password: e.target.value }))}
+                      className={`${input(errors.password)} pl-8 pr-9`}
+                    />
+                    <button type="button" onClick={() => setShowPassword(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                      {showPassword ? <EyeOff size={14}/> : <Eye size={14}/>}
+                    </button>
+                  </div>
+                </Field>
+                <Field label="Confirm Password" required error={errors.password_confirmation}>
+                  <div className="relative">
+                    <Lock size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"/>
+                    <input
+                      type={showConfirm ? "text" : "password"}
+                      placeholder="Re-enter password"
+                      value={formData.password_confirmation}
+                      onChange={e => setFormData(p => ({ ...p, password_confirmation: e.target.value }))}
+                      className={`${input(errors.password_confirmation)} pl-8 pr-9`}
+                    />
+                    <button type="button" onClick={() => setShowConfirm(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                      {showConfirm ? <EyeOff size={14}/> : <Eye size={14}/>}
+                    </button>
+                  </div>
+                </Field>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2 */}
+          {formStep === 2 && (
+            <div className="space-y-4">
+              <Field label="Street Address" required error={errors.address}>
+                <input type="text" placeholder="Street name, Ward number" value={formData.address}
+                  onChange={e => setFormData(p => ({ ...p, address: e.target.value }))}
+                  className={input(errors.address)}/>
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="City" required error={errors.city}>
+                  <input type="text" placeholder="Kathmandu" value={formData.city}
+                    onChange={e => setFormData(p => ({ ...p, city: e.target.value }))}
+                    className={input(errors.city)}/>
+                </Field>
+                <Field label="Province" required error={errors.state}>
+                  <select value={formData.state} onChange={e => setFormData(p => ({ ...p, state: e.target.value }))} className={input(errors.state)}>
+                    <option value="">Select Province</option>
+                    {["Province 1","Madhesh","Bagmati","Gandaki","Lumbini","Karnali","Sudurpashchim"].map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="ZIP Code" required error={errors.zip_code}>
+                  <input type="text" placeholder="44600" value={formData.zip_code}
+                    onChange={e => setFormData(p => ({ ...p, zip_code: e.target.value }))}
+                    className={input(errors.zip_code)}/>
+                </Field>
+                <Field label="Country">
+                  <input type="text" value={formData.country}
+                    onChange={e => setFormData(p => ({ ...p, country: e.target.value }))}
+                    className={input()}/>
+                </Field>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3 — FIX #6: "User Type" select now sets 'role', not 'type' */}
+          {formStep === 3 && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Blood Type" required error={errors.blood_type}>
+                  <select value={formData.blood_type} onChange={e => setFormData(p => ({ ...p, blood_type: e.target.value }))} className={input(errors.blood_type)}>
+                    <option value="">Select</option>
+                    {["A+","A-","B+","B-","O+","O-","AB+","AB-"].map(b => <option key={b}>{b}</option>)}
+                  </select>
+                </Field>
+                <Field label="Role">
+                  <select value={formData.role} onChange={e => setFormData(p => ({ ...p, role: e.target.value }))} className={input()}>
+                    <option value="user">General User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </Field>
+                <Field label="Status">
+                  <select value={formData.status} onChange={e => setFormData(p => ({ ...p, status: e.target.value }))} className={input()}>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                    <option value="blocked">Blocked</option>
+                  </select>
+                </Field>
+              </div>
+              <Field label="Medical Conditions">
+                <input type="text" placeholder="Hypertension, Diabetes…" value={formData.medical_conditions}
+                  onChange={e => setFormData(p => ({ ...p, medical_conditions: e.target.value }))}
+                  className={input()}/>
+              </Field>
+              <Field label="Notes">
+                <textarea rows={3} placeholder="Additional notes…" value={formData.notes}
+                  onChange={e => setFormData(p => ({ ...p, notes: e.target.value }))}
+                  className={`${input()} resize-none`}/>
+              </Field>
+              {errors.submit && <ErrorBox msg={errors.submit}/>}
+            </div>
+          )}
+
+          {/* Wizard Nav */}
+          <div className="flex items-center justify-between mt-6 pt-5 border-t border-gray-200">
+            {formStep > 1
+              ? <button type="button" onClick={handlePrev} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gray-100 text-gray-700 text-sm font-semibold hover:bg-gray-200 transition-all duration-300"><ArrowLeft size={15}/>Previous</button>
+              : <div/>}
+            {formStep < 3
+              ? <button type="button" onClick={handleNext} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white text-sm font-semibold hover:shadow-2xl transition-all duration-300">Next<ArrowRight size={15}/></button>
+              : <button type="button" onClick={handleAddUser} disabled={submitting} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-green-500 to-green-600 text-white text-sm font-semibold hover:shadow-2xl transition-all duration-300 disabled:opacity-50">
+                  {submitting ? <><Spinner/> Saving…</> : <><Check size={15}/>Create User</>}
+                </button>}
+          </div>
+        </Modal>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════
+          VIEW USER MODAL
+      ══════════════════════════════════════════════════════════════ */}
+      {viewModal && selectedUser && (
+        <Modal onClose={() => { setViewModal(false); setSelectedUser(null); }} title="User Details" wide>
+          <div className="flex items-center gap-4 pb-5 mb-5 border-b border-slate-100">
+            <Avatar user={selectedUser} size={16}/>
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">{selectedUser.name}</h3>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${statusBadge(selectedUser.status)}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${selectedUser.status === "active" ? "bg-emerald-500" : selectedUser.status === "blocked" ? "bg-red-500" : "bg-amber-500"}`}/>
+                  <span className="capitalize">{selectedUser.status}</span>
+                </span>
+                {/* FIX #6: use userRole() for badge */}
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${roleBadge(userRole(selectedUser))}`}>
+                  {userRole(selectedUser) === "admin" ? <Shield size={10}/> : <User size={10}/>}
+                  <span className="capitalize">{userRole(selectedUser)}</span>
+                </span>
+                {selectedUser.blood_type && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-bold bg-red-50 text-red-600 border border-red-100">
+                    <Droplet size={10}/>{selectedUser.blood_type}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {[
+              { icon: Hash,      label: "UID",            val: selectedUser.uid || "—" },
+              { icon: Mail,      label: "Email",           val: selectedUser.email },
+              { icon: Phone,     label: "Phone",           val: selectedUser.phone || "—" },
+              { icon: Calendar,  label: "Date of Birth",   val: selectedUser.date_of_birth ? new Date(selectedUser.date_of_birth).toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}) : "—" },
+              { icon: User,      label: "Gender",          val: selectedUser.gender ? selectedUser.gender.charAt(0).toUpperCase()+selectedUser.gender.slice(1) : "—" },
+              { icon: Shield,    label: "Role",            val: userRole(selectedUser) },
+              { icon: Clock,     label: "Joined",          val: selectedUser.created_at ? new Date(selectedUser.created_at).toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}) : "—" },
+              { icon: MapPin,    label: "Address",         val: [selectedUser.address, selectedUser.city, selectedUser.state, selectedUser.zip_code, selectedUser.country].filter(Boolean).join(", ") || "—", full: true },
+              ...(selectedUser.medical_conditions ? [{ icon: Activity, label: "Medical Conditions", val: selectedUser.medical_conditions, full: true }] : []),
+              ...(selectedUser.notes ? [{ icon: FileText, label: "Notes", val: selectedUser.notes, full: true }] : []),
+            ].map(({ icon: Icon, label, val, full }, i) => (
+              <div key={i} className={`flex items-start gap-3 p-3 bg-slate-50 rounded-lg ${full ? "md:col-span-2" : ""}`}>
+                <Icon size={16} className="text-slate-400 mt-0.5 flex-shrink-0"/>
+                <div>
+                  <p className="text-xs font-medium text-slate-400 mb-0.5">{label}</p>
+                  <p className="text-sm text-slate-700 break-all">{val}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════
+          EDIT USER MODAL — FIX #6: all fields reference 'role'
+      ══════════════════════════════════════════════════════════════ */}
+      {editModal && selectedUser && (
+        <Modal onClose={() => { setEditModal(false); setSelectedUser(null); resetForm(); }} title={`Edit — ${selectedUser.name}`} wide>
+          <ImageUpload preview={imagePreview} onChange={handleImageChange} onRemove={() => { imageFileRef.current = null; setImagePreview(null); }}/>
+
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            <Field label="Full Name" error={errors.name}>
+              <input type="text" value={formData.name} onChange={e => setFormData(p => ({ ...p, name: e.target.value }))} className={input(errors.name)}/>
+            </Field>
+            <Field label="Email" error={errors.email}>
+              <input type="email" value={formData.email} onChange={e => setFormData(p => ({ ...p, email: e.target.value }))} className={input(errors.email)}/>
+            </Field>
+            <Field label="Phone" error={errors.phone}>
+              <input type="text" value={formData.phone} onChange={e => setFormData(p => ({ ...p, phone: e.target.value }))} className={input(errors.phone)}/>
+            </Field>
+            <Field label="Date of Birth">
+              <input type="date" value={formData.date_of_birth} onChange={e => setFormData(p => ({ ...p, date_of_birth: e.target.value }))} className={input()}/>
+            </Field>
+            <Field label="City">
+              <input type="text" value={formData.city} onChange={e => setFormData(p => ({ ...p, city: e.target.value }))} className={input()}/>
+            </Field>
+            <Field label="Province">
+              <select value={formData.state} onChange={e => setFormData(p => ({ ...p, state: e.target.value }))} className={input()}>
+                <option value="">Select Province</option>
+                {["Province 1","Madhesh","Bagmati","Gandaki","Lumbini","Karnali","Sudurpashchim"].map(s => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Blood Type">
+              <select value={formData.blood_type} onChange={e => setFormData(p => ({ ...p, blood_type: e.target.value }))} className={input()}>
+                <option value="">Select</option>
+                {["A+","A-","B+","B-","O+","O-","AB+","AB-"].map(b => <option key={b}>{b}</option>)}
+              </select>
+            </Field>
+            {/* FIX #6: 'role' field drives both type badge and filter */}
+            <Field label="Role">
+              <select value={formData.role} onChange={e => setFormData(p => ({ ...p, role: e.target.value }))} className={input()}>
+                <option value="user">General User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </Field>
+            <Field label="Status">
+              <select value={formData.status} onChange={e => setFormData(p => ({ ...p, status: e.target.value }))} className={input()}>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+                <option value="blocked">Blocked</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Medical Conditions" className="mt-3">
+            <input type="text" value={formData.medical_conditions} onChange={e => setFormData(p => ({ ...p, medical_conditions: e.target.value }))} className={input()}/>
+          </Field>
+          <Field label="Notes" className="mt-3">
+            <textarea rows={2} value={formData.notes} onChange={e => setFormData(p => ({ ...p, notes: e.target.value }))} className={`${input()} resize-none`}/>
+          </Field>
+
+          {/* ── Optional password reset ─────────────────────────────── */}
+          <div className="mt-4 pt-4 border-t border-dashed border-slate-200">
+            <p className="text-xs font-semibold text-slate-500 mb-3 flex items-center gap-1.5">
+              <Lock size={12}/> Change Password <span className="font-normal text-slate-400">(leave blank to keep current)</span>
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="New Password" error={errors.password}>
+                <div className="relative">
+                  <Lock size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"/>
+                  <input
+                    type={showEditPassword ? "text" : "password"}
+                    placeholder="Min. 8 characters"
+                    value={formData.password}
+                    onChange={e => setFormData(p => ({ ...p, password: e.target.value }))}
+                    className={`${input(errors.password)} pl-8 pr-9`}
+                  />
+                  <button type="button" onClick={() => setShowEditPassword(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                    {showEditPassword ? <EyeOff size={14}/> : <Eye size={14}/>}
+                  </button>
+                </div>
+              </Field>
+              <Field label="Confirm New Password" error={errors.password_confirmation}>
+                <div className="relative">
+                  <Lock size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"/>
+                  <input
+                    type={showEditPassword ? "text" : "password"}
+                    placeholder="Re-enter new password"
+                    value={formData.password_confirmation}
+                    onChange={e => setFormData(p => ({ ...p, password_confirmation: e.target.value }))}
+                    className={`${input(errors.password_confirmation)} pl-8 pr-9`}
+                  />
+                </div>
+              </Field>
+            </div>
+          </div>
+          {errors.submit && <ErrorBox msg={errors.submit}/>}
+
+          <div className="mt-5 pt-5 border-t border-gray-200">
+            <button onClick={handleUpdateUser} disabled={submitting}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white text-sm font-semibold hover:shadow-2xl transition-all duration-300 disabled:opacity-50 flex items-center justify-center gap-2">
+              {submitting ? <><Spinner/>Updating…</> : "Update User"}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ─── SHARED SUB-COMPONENTS ─────────────────────────────────────────────────────
+
+function Modal({ children, onClose, title, subtitle, wide }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+      <div className={`bg-white rounded-2xl shadow-2xl w-full ${wide ? "max-w-2xl" : "max-w-xl"} relative my-8`}>
+        <div className="flex items-start justify-between p-6 border-b border-gray-200">
+          <div>
+            <h2 className="text-xl font-bold text-gray-800">{title}</h2>
+            {subtitle && <p className="text-sm text-gray-500 mt-0.5">{subtitle}</p>}
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-gray-500 hover:text-gray-800 transition-colors ml-4 flex-shrink-0">
+            <X size={20}/>
+          </button>
+        </div>
+        <div className="p-6">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Stepper({ step }) {
+  const labels = ["Basic Info", "Address", "Medical & Role"];
+  return (
+    <div className="flex items-center mb-8">
+      {labels.map((label, i) => {
+        const n = i + 1;
+        return (
+          <React.Fragment key={n}>
+            <div className="flex flex-col items-center">
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold transition-all duration-300 ${
+                step > n  ? "bg-green-500 text-white" :
+                step === n ? "bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white shadow-lg" :
+                             "bg-gray-200 text-gray-500"
+              }`}>
+                {step > n ? <Check size={22}/> : n}
+              </div>
+              <span className={`text-xs mt-2 font-medium whitespace-nowrap ${step >= n ? "text-gray-800" : "text-gray-400"}`}>{label}</span>
+            </div>
+            {i < labels.length - 1 && (
+              <div className={`flex-1 h-1 mx-2 mb-5 rounded transition-all duration-300 ${step > n ? "bg-green-500" : "bg-gray-200"}`}/>
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function ImageUpload({ preview, onChange, onRemove, error }) {
+  return (
+    <div className="flex flex-col items-center mb-4">
+      <div className="relative">
+        {preview ? (
+          <>
+            <img src={preview} alt="Preview" className="w-28 h-28 rounded-full object-cover border-4 border-gray-200"/>
+            <button type="button" onClick={onRemove} className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-1.5 hover:bg-red-600 transition-colors shadow">
+              <X size={14}/>
+            </button>
+          </>
+        ) : (
+          <div className="w-28 h-28 rounded-full bg-gray-100 border-4 border-gray-200 flex items-center justify-center">
+            <Camera size={28} className="text-gray-400"/>
           </div>
         )}
       </div>
-    );
-  }
+      <label htmlFor="img-upload" className="mt-4 flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-red-500 via-rose-600 to-pink-600 text-white text-sm font-medium hover:shadow-lg cursor-pointer transition-all">
+        <Upload size={14}/>{preview ? "Change Image" : "Upload Image"}
+      </label>
+      <input id="img-upload" type="file" accept="image/*" onChange={onChange} className="hidden"/>
+      <p className="text-xs text-gray-500 mt-2">Max size: 5MB. Formats: JPG, PNG, GIF</p>
+      {error && <p className="text-red-500 text-xs mt-1 flex items-center gap-1"><AlertCircle size={11}/>{error}</p>}
+    </div>
+  );
+}
+
+function Field({ label, required, error, children, className }) {
+  return (
+    <div className={className}>
+      <label className="block text-xs font-semibold text-slate-600 mb-1">
+        {label}{required && <span className="text-red-500 ml-0.5">*</span>}
+      </label>
+      {children}
+      {error && <p className="text-red-500 text-xs mt-1 flex items-center gap-1"><AlertCircle size={11}/>{error}</p>}
+    </div>
+  );
+}
+
+function ErrorBox({ msg }) {
+  return (
+    <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-100 rounded-lg text-red-600 text-sm">
+      <AlertCircle size={15} className="flex-shrink-0"/>{msg}
+    </div>
+  );
+}
+
+function Spinner() {
+  return <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin"/>;
+}
+
+const input = (err) =>
+  `w-full px-3 py-2 border rounded-lg text-sm transition-all focus:outline-none focus:ring-2 ${
+    err
+      ? "border-red-300 focus:ring-red-200 bg-red-50"
+      : "border-slate-200 focus:ring-slate-200 focus:border-slate-300 bg-white"
+  }`;

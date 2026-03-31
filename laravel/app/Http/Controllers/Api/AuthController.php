@@ -22,6 +22,8 @@ class AuthController extends Controller
                 'phone' => 'required|string',
                 'address' => 'required|string',
                 'blood_group' => 'required|string',
+                'dob' => 'nullable|string',      // optional, will convert
+                'image' => 'nullable|string',    // base64 image
             ]);
 
             if ($validator->fails()) {
@@ -39,6 +41,30 @@ class AuthController extends Controller
                 ], 409);
             }
 
+            // Convert DOB safely
+            $dob = null;
+            if (!empty($request->dob)) {
+                $timestamp = strtotime($request->dob);
+                if ($timestamp !== false) {
+                    $dob = date('Y-m-d', $timestamp);
+                }
+            }
+
+            // Handle image if provided
+            $imagePath = null;
+            if (!empty($request->image)) {
+                $image = $request->image; // base64 string
+                $imageName = time() . '_' . uniqid() . '.png';
+                $imageFolder = public_path('uploads/ProfileImages');
+
+                if (!file_exists($imageFolder)) {
+                    mkdir($imageFolder, 0755, true);
+                }
+
+                file_put_contents($imageFolder . '/' . $imageName, base64_decode($image));
+                $imagePath = 'uploads/ProfileImages/' . $imageName;
+            }
+
             // Generate OTP
             $otp = rand(1000, 9999);
 
@@ -50,8 +76,10 @@ class AuthController extends Controller
                 'phone' => $request->phone,
                 'address' => $request->address,
                 'blood_group' => $request->blood_group,
+                'dob' => $dob,
+                'image' => $imagePath,
                 'otp' => $otp,
-                'otp_created_at' => now()->timestamp, // store as timestamp
+                'otp_created_at' => now()->timestamp,
             ], now()->addMinutes(10));
 
             // Log OTP
@@ -122,6 +150,8 @@ class AuthController extends Controller
                 'phone' => $cachedData['phone'],
                 'address' => $cachedData['address'],
                 'blood_group' => $cachedData['blood_group'],
+                'dob' => $cachedData['dob'],
+                'image' => $cachedData['image'], // file path
                 'password' => Hash::make($request->password),
             ]);
 
@@ -131,7 +161,8 @@ class AuthController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Registration completed successfully',
-                'user_id' => $user->id
+                'user_id' => $user->id,
+                'image_url' => $user->image ? url($user->image) : null,
             ], 201);
         } catch (\Throwable $e) {
             Log::error('Complete Registration Error: ' . $e->getMessage());
@@ -176,7 +207,8 @@ class AuthController extends Controller
                 'success' => true,
                 'message' => 'Login successful',
                 'token' => $token,
-                'user' => $user
+                'user' => $user,
+                'image_url' => $user->image ? url($user->image) : null,
             ]);
         } catch (\Throwable $e) {
             Log::error('Login Error: ' . $e->getMessage());
@@ -187,51 +219,56 @@ class AuthController extends Controller
         }
     }
 
+    // ---------------- Admin Login ----------------
     public function adminLogin(Request $request)
     {
-        // Validate input
-        $request->validate([
-            'login'    => 'required|string', // email OR phone
+        $validator = Validator::make($request->all(), [
+            'login' => 'required|string',
             'password' => 'required|string',
         ]);
 
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
         try {
-            // Use 'email' instead of 'username' if your table has no 'username'
             $user = User::where('email', $request->login)
                 ->orWhere('phone', $request->login)
                 ->first();
         } catch (\Exception $e) {
-            // Catch any unexpected errors
+            Log::error('Admin Login Error: ' . $e->getMessage());
             return response()->json([
                 'message' => 'Something went wrong. Please try again.'
             ], 500);
         }
 
-        // Invalid credentials
         if (!$user || !Hash::check($request->password, $user->password)) {
             return response()->json([
                 'message' => 'Invalid login or password.'
             ], 401);
         }
 
-        // Admin only check
         if ($user->role != 1) {
             return response()->json([
                 'message' => 'You do not have admin access.'
             ], 403);
         }
 
-        // Create token
         $token = $user->createToken('admin-token')->plainTextToken;
 
         return response()->json([
             'message' => 'Login successful',
-            'token'   => $token,
-            'user'    => [
-                'id'    => $user->id,
+            'token' => $token,
+            'user' => [
+                'id' => $user->id,
                 'email' => $user->email,
                 'phone' => $user->phone,
-                'role'  => $user->role,
+                'role' => $user->role,
+                'dob' => $user->dob,
+                'image_url' => $user->image ? url($user->image) : null,
             ]
         ], 200);
     }
